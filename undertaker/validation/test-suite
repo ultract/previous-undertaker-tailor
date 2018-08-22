@@ -1,0 +1,205 @@
+#!/usr/bin/env python
+
+import fnmatch
+import threading
+from subprocess import Popen, PIPE
+import sys
+import glob
+import os
+import difflib
+import getopt
+
+threads = 1
+testcase_pattern = "*.c"
+default_command = "undertaker -v -m models $file"
+default_path = ".."
+
+QUIET = False
+
+class Future:
+    import threading
+    def __init__(self):
+        self.value = None
+        self.__set = False
+        self.cond = threading.Condition()
+    def get(self):
+        if self.__set:
+            return self.value
+        self.cond.acquire()
+        while not self.__set:
+            self.cond.wait()
+        self.cond.release()
+        return self.value
+
+    def set(self, value):
+        self.cond.acquire()
+        self.value = value
+        self.__set = True
+        self.cond.notifyAll()
+        self.cond.release()
+
+
+def test_case_open(test_case):
+    try:
+        fd = open(test_case);
+    except:
+        print " Couldn't open test case: " + test_case
+        sys.exit(2)
+    return fd
+
+def get_tag(test_case, field, default = None):
+    fd = test_case_open(test_case)
+    value = default
+    for line in fd.readlines():
+        if field in line and ":" in line:
+            value = line[line.index(":") + 1:-1].strip()
+    fd.close()
+    return value
+
+def get_area(test_case, start, stop):
+    fd = test_case_open(test_case)
+    value = []
+    dump = False
+    for line in fd.readlines():
+        if stop in line:
+            dump = False
+        if dump:
+            value.append(line)
+        if start in line:
+            dump = True
+    fd.close()
+    return value
+
+def run_testcase_helper(test_case, check_name, future):
+    stdout_expected = get_area(test_case, "check-output-start", "check-output-end")
+    stderr_expected = get_area(test_case, "check-error-start", "check-error-end")
+    exit_value = get_tag(test_case, "check-exit-value", "0")
+    command = get_tag(test_case, "check-command", default_command)
+    if "$file" in command:
+        command = command.replace("$file", test_case)
+    cruftfiles=list()
+    cruftfiles.extend(glob.glob(test_case + ".config*"))
+    cruftfiles.extend(glob.glob(test_case + ".cppflags*"))
+    cruftfiles.extend(glob.glob(test_case + ".source*"))
+    for cruft in cruftfiles:
+        os.unlink(cruft)
+
+    command = default_path + "/" + command
+
+    output = "  TEST %s (%s, %d leftovers removed)\n" % (check_name, test_case, len(cruftfiles))
+
+    failed = False
+
+    p = Popen(command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE,
+              close_fds=True)
+    p.stdin.close()
+    (stdout_got, stderr_got) = (p.stdout.readlines(), p.stderr.readlines())
+    p.wait()
+
+    if int(exit_value) != p.returncode:
+        output += "    Exit code was %d (%s exptected)" % (p.returncode, exit_value)
+        failed = True
+
+    stdout_diff = list(difflib.unified_diff(sorted(stdout_expected), sorted(stdout_got)))
+    stderr_diff = list(difflib.unified_diff(sorted(stderr_expected), sorted(stderr_got)))
+
+    def write_file(suffix, content):
+        fd = open(test_case + "." + suffix, "w+")
+        for i in content:
+            fd.write(i)
+        fd.close()
+
+    write_file("output.expected", stdout_expected)
+    write_file("output.got", stdout_got)
+    write_file("output.diff", stdout_diff)
+
+    write_file("error.expected", stderr_expected)
+    write_file("error.got", stderr_got)
+    write_file("error.diff", stderr_diff)
+
+    if len(stdout_diff) > 0:
+        if not QUIET:
+            output += "   STDOUT-DIFF:\n" + "".join(stdout_diff)
+        failed = True
+    if len(stderr_diff) > 0:
+        if not QUIET:
+            output += "   STDERR-DIFF:\n" + "".join(stderr_diff)
+        failed = True
+
+    if failed:
+        output += "  Failed\n"
+    sys.stdout.write(output)
+
+    future.set(not failed)
+
+
+def run_testcase(test_case, check_name):
+    future = Future()
+    if threading.active_count() >= threads:
+        run_testcase_helper(test_case, check_name, future)
+        future.get()
+    else:
+        t = threading.Thread(target = run_testcase_helper,
+                             args = (test_case, check_name, future))
+        t.start()
+    return future
+
+def run_test_suite(tests = sorted(fnmatch.filter(os.listdir("."), testcase_pattern))):
+    tests_run = 0
+    tests_failed = 0
+    tests_known_fail = 0
+
+    failed_tests = []
+
+    for test_case in tests:
+        check_name = get_tag(test_case, "check-name")
+        if not check_name:
+            print "warning: test '%s' unhandled" % test_case
+            continue
+        failed_tests.append((run_testcase(test_case, check_name),
+                       get_tag(test_case, "check-known-to-fail")))
+
+    for (passed, expected) in failed_tests:
+        if not passed.get():
+            tests_failed += 1
+            if expected:
+                tests_known_fail += 1
+        tests_run += 1
+    print "Out of %d tests, %d passed, %d failed (%d of them are known to fail)" \
+          % (tests_run, tests_run - tests_failed, tests_failed, tests_known_fail)
+
+    return tests_failed <= tests_known_fail
+
+
+def usage():
+    print "%s [-t threads] [-q] [test-cases...]" % sys.argv[0]
+    print " if no test-cases are given, all in current directory are run"
+
+if __name__ == '__main__':
+    opts, args = getopt.getopt(sys.argv[1:], "ht:q")
+
+    for opt,arg in opts:
+        if opt in ('-t', '--threads'):
+            threads = int(arg)
+            if threads < 1:
+                print "invalid thread_count"
+                usage()
+                sys.exit(1)
+        elif opt in ('-h', '--help'):
+            usage()
+            sys.exit(0)
+        elif opt in ('-q', '--quiet'):
+            QUIET = True
+        else:
+            print "unkown option"
+            assert False
+
+    if len(args) > 0:
+        ret = run_test_suite(args)
+    else:
+        ret = run_test_suite()
+
+    if ret:
+        sys.exit(0)
+    else:
+        sys.exit(-1)

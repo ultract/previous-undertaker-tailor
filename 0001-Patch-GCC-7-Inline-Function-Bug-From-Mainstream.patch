@@ -1,0 +1,148 @@
+From 3b43cfecd68d82edbd7d965d946de78db4126dbb Mon Sep 17 00:00:00 2001
+From: ultract <ultract@nate.com>
+Date: Wed, 11 Jul 2018 20:56:32 -0700
+Subject: [PATCH] Patch: GCC-7 Inline Function Bug From Mainstream
+
+---
+ tailor/src/constants.h        | 4 ++++
+ tailor/src/hashset.h          | 2 +-
+ tailor/src/traceutil-native.c | 6 +++---
+ tailor/src/traceutil-native.h | 6 +++---
+ tailor/src/traceutil-stdio.c  | 8 ++++----
+ tailor/src/traceutil-stdio.h  | 8 ++++----
+ 6 files changed, 19 insertions(+), 15 deletions(-)
+
+diff --git a/tailor/src/constants.h b/tailor/src/constants.h
+index 9510a50..5d6e820 100644
+--- a/tailor/src/constants.h
++++ b/tailor/src/constants.h
+@@ -22,4 +22,8 @@
+ // Minimum lines to flush
+ #define IGNOREFILEREOPENLOWERBOUND 8
+ 
++// an attribute before the inline keyword is required by GCC7
++// ( cf. https://wiki.debian.org/GCC7 )
++#define undertaker_inline __attribute__ ((always_inline)) inline
++
+ #endif
+diff --git a/tailor/src/hashset.h b/tailor/src/hashset.h
+index 484868b..ee963dc 100644
+--- a/tailor/src/hashset.h
++++ b/tailor/src/hashset.h
+@@ -47,7 +47,7 @@ int hashelementcounter = 0;
+  * We check, if the hashmap is full, or the key already exists.
+  * If it did not exists, we add the new address to the end of a bucket.
+  */
+-inline bool hashadd(uintptr_t address) {
++undertaker_inline bool hashadd(uintptr_t address) {
+     unsigned int key = address % SETCAPACITY;
+     hashsetaddr * hashiter;
+     // we are full... sorry
+diff --git a/tailor/src/traceutil-native.c b/tailor/src/traceutil-native.c
+index 277e2a7..08da918 100644
+--- a/tailor/src/traceutil-native.c
++++ b/tailor/src/traceutil-native.c
+@@ -168,7 +168,7 @@ void readModules() {
+  * currently present.
+  */
+ 
+-inline bool addModuleAddr(unsigned long long addr) {
++undertaker_inline bool addModuleAddr(unsigned long long addr) {
+     for (j=0; j<loadedModules; j++) {
+         unsigned long long lowAddr = loadedModule[j].base;
+         unsigned long long highAddr = lowAddr + loadedModule[j].length;
+@@ -215,7 +215,7 @@ inline bool addModuleAddr(unsigned long long addr) {
+  * table yet, a call to addModuleAddr(addr) is triggered.
+  */
+ 
+-inline bool addAddr(unsigned long long addr) {
++undertaker_inline bool addAddr(unsigned long long addr) {
+     if (hashadd(addr)) {
+         // Check if module
+         if (modulePath != NULL && addr >= moduleBaseAddr) {
+@@ -264,7 +264,7 @@ inline bool addAddr(unsigned long long addr) {
+  * functions are being encountered.
+  */
+ 
+-inline void ignoreFunc(char * callerBuffer, int callerSize) {
++undertaker_inline void ignoreFunc(char * callerBuffer, int callerSize) {
+     // Flushing does not work on debugfs, so we close and reopen the ignore file
+     if (ignoreFile == -1
+         || ++ignorePathReopenCounter >= ignorePathReopenUpperBound) {
+diff --git a/tailor/src/traceutil-native.h b/tailor/src/traceutil-native.h
+index 8a53a47..d309eb1 100644
+--- a/tailor/src/traceutil-native.h
++++ b/tailor/src/traceutil-native.h
+@@ -76,8 +76,8 @@ char decToHexChar[16];
+ 
+ //function declarations
+ void readModules();
+-inline bool addModuleAddr(unsigned long long addr);
+-inline bool addAddr(unsigned long long addr);
+-inline void ignoreFunc(char * funcbuf, int funcbufp);
++undertaker_inline bool addModuleAddr(unsigned long long addr);
++undertaker_inline bool addAddr(unsigned long long addr);
++undertaker_inline void ignoreFunc(char * funcbuf, int funcbufp);
+ 
+ #endif
+diff --git a/tailor/src/traceutil-stdio.c b/tailor/src/traceutil-stdio.c
+index 6aef74b..e2c98a5 100644
+--- a/tailor/src/traceutil-stdio.c
++++ b/tailor/src/traceutil-stdio.c
+@@ -41,7 +41,7 @@ int ignoreFileReopenCounter = 0;
+  * later test whether a given address is inside a certain module's address range
+  */
+ 
+-inline void readModules() {
++undertaker_inline void readModules() {
+     FILE * moduleFile;
+     moduleFile = fopen (modulePath,"r");
+     // On error, use old version of procmodules
+@@ -71,7 +71,7 @@ inline void readModules() {
+  * table yet, a call to addModuleAddr(addr) is triggered.
+  */
+ 
+-inline bool addAddr(unsigned long long addr) {
++undertaker_inline bool addAddr(unsigned long long addr) {
+     // address new?
+     if (hashadd(addr)) {
+         // module address (if modules enabled)?
+@@ -101,7 +101,7 @@ inline bool addAddr(unsigned long long addr) {
+  * currently present.
+  */
+ 
+-inline bool addModuleAddr(unsigned long long addr) {
++undertaker_inline bool addModuleAddr(unsigned long long addr) {
+     int currentModule = 0;
+     // Look in every module
+     while (currentModule < MODULESIZE) {
+@@ -127,7 +127,7 @@ inline bool addModuleAddr(unsigned long long addr) {
+  * functions are being encountered.
+  */
+ 
+-inline void ignoreFunc(char *name) {
++undertaker_inline void ignoreFunc(char *name) {
+     // Otherwise, we add the function's name to the ignore list.
+     if (ignoreFile == NULL
+         || ++ignoreFileReopenCounter >= ignoreFileReopenUpperBound) {
+diff --git a/tailor/src/traceutil-stdio.h b/tailor/src/traceutil-stdio.h
+index 3e10c65..932a830 100644
+--- a/tailor/src/traceutil-stdio.h
++++ b/tailor/src/traceutil-stdio.h
+@@ -41,9 +41,9 @@ typedef struct module {
+ } module;
+ 
+ //function declarations
+-inline void readModules();
+-inline bool addAddr(unsigned long long addr);
+-inline bool addModuleAddr(unsigned long long addr);
+-inline void ignoreFunc(char *name);
++undertaker_inline void readModules();
++undertaker_inline bool addAddr(unsigned long long addr);
++undertaker_inline bool addModuleAddr(unsigned long long addr);
++undertaker_inline void ignoreFunc(char *name);
+ 
+ #endif
+-- 
+2.17.0
+
